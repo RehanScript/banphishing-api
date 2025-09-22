@@ -5,8 +5,22 @@ from urllib.parse import urlparse
 import re
 from scipy.sparse import hstack
 import pandas as pd
+# --- NEW: Import the CORS middleware ---
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+# --- NEW: Add the CORS middleware ---
+# This allows your browser extension to communicate with the API
+origins = ["*"] # In production, you might want to restrict this to your extension's ID
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allows all headers
+)
 
 # Load the saved model and vectorizer
 model = joblib.load('model.joblib')
