@@ -1,5 +1,6 @@
 fastapi
 uvicorn
-scikit-learn
-joblib
-pandas
+torch
+transformers
+beautifulsoup4
+requests
