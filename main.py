@@ -1,68 +1,66 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-import joblib
-from urllib.parse import urlparse
-import re
-from scipy.sparse import hstack
-import pandas as pd
-# --- NEW: Import the CORS middleware ---
-from fastapi.middleware.cors import CORSMiddleware
+import torch
+from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
+import requests
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
-# --- NEW: Add the CORS middleware ---
-# This allows your browser extension to communicate with the API
-origins = ["*"] # In production, you might want to restrict this to your extension's ID
+# --- 1. Load the Fine-Tuned Model ---
+# This happens once when the API starts up
+try:
+    MODEL_PATH = 'banphishing-bert-model'
+    tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_PATH)
+    model = DistilBertForSequenceClassification.from_pretrained(MODEL_PATH)
+    print("✅ Fine-tuned BERT model loaded successfully!")
+except Exception as e:
+    print(f"❌ Error loading model: {e}")
+    model = None
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"], # Allows all headers
-)
-
-# Load the saved model and vectorizer
-model = joblib.load('model.joblib')
-vectorizer = joblib.load('vectorizer.joblib')
-
-# Feature Extraction Function
-def extract_features(url):
-    features = {}
+# --- 2. Real-time Text Scraping Function ---
+def scrape_text_from_url(url):
     try:
-        parsed_url = urlparse(url)
-        domain = parsed_url.netloc
-        features['url_length'] = len(url)
-        features['hostname_length'] = len(domain)
-        features['num_dots'] = url.count('.')
-        features['num_slashes'] = url.count('/')
-        suspicious_keywords = ['login', 'secure', 'account', 'verify', 'password', 'update']
-        for keyword in suspicious_keywords:
-            features[f'has_{keyword}'] = 1 if keyword in url.lower() else 0
-        features['is_ip'] = 1 if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', domain) else 0
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            return ' '.join(soup.body.get_text().split())
+        return ""
     except:
-        feature_names = ['url_length', 'hostname_length', 'num_dots', 'num_slashes', 'is_ip'] + [f'has_{kw}' for kw in suspicious_keywords]
-        return {fn: 0 for fn in feature_names}
-    return features
+        return ""
 
-# Define the request model
+# --- 3. Define the request model ---
 class URLRequest(BaseModel):
     url: str
 
-# Create the API Endpoint
+# --- 4. Create the API Endpoint ---
 @app.post("/analyze-url")
 def analyze_url(request: URLRequest):
-    url_to_check = request.url
-    numerical_features_df = pd.DataFrame([extract_features(url_to_check)])
-    url_text_features = vectorizer.transform([url_to_check])
-    features_combined = hstack([numerical_features_df, url_text_features])
-    prediction = model.predict(features_combined)[0]
+    if not model:
+        return {"status": "ERROR", "detail": "Model not loaded"}
 
-    if prediction == 1:
+    # Scrape the text from the URL in real-time
+    text_to_analyze = scrape_text_from_url(request.url)
+    if not text_to_analyze:
+        # If we can't get text, we can't analyze it with this model
+        return {"status": "SAFE", "detail": "Could not retrieve page content"}
+        
+    # Prepare the text for the model
+    inputs = tokenizer(text_to_analyze, return_tensors="pt", truncation=True, padding=True, max_length=512)
+    
+    # Make the prediction
+    with torch.no_grad():
+        logits = model(**inputs).logits
+    
+    predicted_class_id = logits.argmax().item()
+    
+    # Return the result (1 for phishing, 0 for benign)
+    if predicted_class_id == 1:
         return {"status": "PHISHING"}
     else:
         return {"status": "SAFE"}
 
 @app.get("/")
 def read_root():
-    return {"message": "BanPhishing API is live and ready for analysis."}
+    return {"message": "BanPhishing API v2 (BERT) is live and ready."}
